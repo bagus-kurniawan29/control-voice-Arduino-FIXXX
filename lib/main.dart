@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 void main() {
   runApp(MaterialApp(
@@ -21,7 +20,7 @@ void main() {
   ));
 }
 
-// --- WIDGET UTAMA (PAGE VIEW UNTUK SLIDE) ---
+// --- WIDGET UTAMA ---
 class MainPageView extends StatefulWidget {
   const MainPageView({super.key});
 
@@ -30,14 +29,13 @@ class MainPageView extends StatefulWidget {
 }
 
 class _MainPageViewState extends State<MainPageView> {
-  // --- INI BARIS YANG HILANG SEBELUMNYA ---
   final PageController _pageController = PageController(initialPage: 0);
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: PageView(
-        controller: _pageController, // Menggunakan controller di sini
+        controller: _pageController,
         children: const [
           JarvisPage(),   // Halaman 1: Kontrol
           CreditsPage(),  // Halaman 2: Credit
@@ -55,162 +53,65 @@ class JarvisPage extends StatefulWidget {
   State<JarvisPage> createState() => _JarvisPageState();
 }
 
-class _JarvisPageState extends State<JarvisPage> with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
+class _JarvisPageState extends State<JarvisPage> with AutomaticKeepAliveClientMixin {
   
   @override
-  bool get wantKeepAlive => true; // Agar Bluetooth tidak putus saat slide
+  bool get wantKeepAlive => true; 
 
   // --- BLUETOOTH VARS ---
   List<ScanResult> _scanResults = [];
   bool _isScanning = false;
   BluetoothDevice? _connectedDevice;
   BluetoothCharacteristic? _writeCharacteristic;
-
-  // --- VOICE VARS ---
-  late stt.SpeechToText _speech;
-  bool _isListening = false;
-  String _textSpoken = "Tekan Mic & Bicara...";
   
-  // --- ANIMASI UI ---
-  late AnimationController _glowController;
-  late Animation<double> _glowAnimation;
-
   // --- SWITCH VARS ---
   bool _isDoorOpen = false;
-  bool _isLampOn = false;
+  bool _isLamp1On = false; 
+  bool _isLamp2On = false; 
 
   @override
   void initState() {
     super.initState();
-    _speech = stt.SpeechToText();
     _checkPermissions();
 
-    _glowController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 1),
-    )..repeat(reverse: true);
-    _glowAnimation = Tween<double>(begin: 5.0, end: 20.0).animate(_glowController);
-
+    // Listener status scanning
     FlutterBluePlus.isScanning.listen((state) {
       if (mounted) setState(() => _isScanning = state);
     });
   }
 
-  @override
-  void dispose() {
-    _glowController.dispose();
-    super.dispose();
-  }
-
   Future<void> _checkPermissions() async {
     if (await Permission.location.isDenied) await Permission.location.request();
-    if (await Permission.microphone.isDenied) await Permission.microphone.request();
+    // Izin mic dihapus karena fitur suara dibuang
     await [Permission.bluetooth, Permission.bluetoothScan, Permission.bluetoothConnect].request();
   }
 
-  // ==========================================================
-  // LOGIKA SUARA (ANTI STUCK + IF ELSE STYLE)
-  // ==========================================================
-  void _listen() async {
-    if (!_isListening) {
-      try {
-        // --- TAMBAHKAN TRY-CATCH DI SINI ---
-        bool available = await _speech.initialize(
-          onStatus: (val) {
-            if (val == 'done' || val == 'notListening') {
-               if(mounted) setState(() => _isListening = false);
-            }
-          },
-          onError: (val) {
-            print('Error Speech: ${val.errorMsg}');
-            if(mounted) setState(() => _isListening = false);
-          },
-          debugLogging: true, // Biar error jelas terlihat di console
-        );
-
-        if (available) {
-          setState(() {
-            _isListening = true;
-            _textSpoken = "Mendengarkan...";
-          });
-          
-          _speech.listen(
-            localeId: "id_ID",
-            listenFor: const Duration(seconds: 10),
-            pauseFor: const Duration(seconds: 3),
-            onResult: (val) {
-              setState(() {
-                _textSpoken = val.recognizedWords;
-                if (val.finalResult) {
-                  _processCommand(val.recognizedWords);
-                }
-              });
-            },
-          );
-        } else {
-          // Jika HP menolak (available = false)
-          setState(() => _textSpoken = "Mic ditolak oleh HP");
-          print("User denied the use of speech recognition.");
-        }
-      } catch (e) {
-        // --- TANGKAP ERROR AGAR TIDAK CRASH ---
-        print("CRITICAL ERROR: $e");
-        setState(() {
-          _isListening = false;
-          _textSpoken = "Gagal Init: Cek Google App";
-        });
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Error: Pastikan Google App terinstall & Default Assistant aktif"),
-            backgroundColor: Colors.red,
-          )
-        );
-      }
-    } else {
-      setState(() => _isListening = false);
-      _speech.stop();
-    }
-  }
-  void _processCommand(String command) {
-    String cmd = command.toLowerCase(); 
-
-    // --- LOGIKA IF ELSE (GAYA LAMA) ---
-    if (cmd.contains("nyalakan lampu") || cmd.contains("hidupkan lampu")) { 
-      _executeCommand("LAMP_ON", true); 
-    } 
-    else if (cmd.contains("matikan lampu")) { 
-      _executeCommand("LAMP_OFF", false); 
-    } 
-    else if (cmd.contains("buka pintu")) { 
-      _executeCommand("DOOR_OPEN", true); 
-    } 
-    else if (cmd.contains("tutup pintu")) { 
-      _executeCommand("DOOR_CLOSE", false); 
-    }
-  }
-
-  void _executeCommand(String bluetoothMsg, bool switchState) {
-    // 1. Kirim Bluetooth
+  // --- FUNGSI EKSEKUSI PERINTAH ---
+  // Tipe: 0=Pintu, 1=Lampu1, 2=Lampu2
+  void _executeCommand(String bluetoothMsg, bool switchState, int type) {
     _sendMessage(bluetoothMsg);
     
-    // 2. Update Switch UI
-    setState(() {
-      if (bluetoothMsg.contains("DOOR")) _isDoorOpen = switchState;
-      if (bluetoothMsg.contains("LAMP")) _isLampOn = switchState;
-    });
-    
-    // 3. Feedback Snackbar
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("Perintah: $bluetoothMsg"), 
-        backgroundColor: Colors.cyanAccent.withOpacity(0.8),
-        duration: const Duration(seconds: 1),
-      )
-    );
+    if (mounted) {
+      setState(() {
+        if (type == 0) _isDoorOpen = switchState;
+        if (type == 1) _isLamp1On = switchState;
+        if (type == 2) _isLamp2On = switchState;
+      });
+      
+      // Feedback Getar/Snackbar kecil
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Sending: $bluetoothMsg"), 
+          backgroundColor: Colors.cyanAccent.withOpacity(0.8),
+          duration: const Duration(milliseconds: 300),
+          behavior: SnackBarBehavior.floating,
+        )
+      );
+    }
   }
-  // ==========================================================
 
+  // --- BLUETOOTH LOGIC ---
   Future<void> _startScan() async {
     setState(() => _scanResults = []);
     try { await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5)); } catch (e) { print(e); }
@@ -224,6 +125,20 @@ class _JarvisPageState extends State<JarvisPage> with TickerProviderStateMixin, 
       await FlutterBluePlus.stopScan();
       await device.connect(autoConnect: false);
       setState(() => _connectedDevice = device);
+      
+      // Monitor koneksi putus
+      device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          if (mounted) {
+            setState(() { 
+              _connectedDevice = null; 
+              _writeCharacteristic = null;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Device Disconnected"), backgroundColor: Colors.red));
+          }
+        }
+      });
+
       List<BluetoothService> services = await device.discoverServices();
       for (var service in services) {
         for (var c in service.characteristics) {
@@ -248,14 +163,17 @@ class _JarvisPageState extends State<JarvisPage> with TickerProviderStateMixin, 
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("JARVIS SYSTEM", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 2, color: Colors.cyanAccent)),
+        title: const Text("JARVIS CONTROLLER", style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 2, color: Colors.cyanAccent)),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 16.0),
-            child: Icon(Icons.bluetooth, color: _connectedDevice != null ? Colors.cyanAccent : Colors.red),
+            child: Icon(
+              _connectedDevice != null ? Icons.bluetooth_connected : Icons.bluetooth_disabled, 
+              color: _connectedDevice != null ? Colors.cyanAccent : Colors.red
+            ),
           )
         ],
       ),
@@ -269,94 +187,86 @@ class _JarvisPageState extends State<JarvisPage> with TickerProviderStateMixin, 
         ),
         child: Column(
           children: [
-            // BAGIAN 1: TEKS & MIC
+            
+            // BAGIAN 1: STATUS DISPLAY (PENGGANTI MIC)
+            // Menampilkan ikon besar status koneksi agar tidak kosong
             Expanded(
-              flex: 4,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // --- TEKS REALTIME DI ATAS MIC ---
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                    child: Text(
-                      _textSpoken, 
-                      textAlign: TextAlign.center,
+              flex: 3,
+              child: Container(
+                width: double.infinity,
+                margin: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black,
+                  boxShadow: [
+                    BoxShadow(
+                      color: (_connectedDevice != null ? Colors.cyanAccent : Colors.red).withOpacity(0.1),
+                      blurRadius: 50,
+                      spreadRadius: 10,
+                    )
+                  ],
+                  border: Border.all(
+                    color: (_connectedDevice != null ? Colors.cyanAccent : Colors.red).withOpacity(0.3),
+                    width: 2
+                  )
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      _connectedDevice != null ? Icons.smart_toy_outlined : Icons.bluetooth_searching,
+                      size: 80,
+                      color: _connectedDevice != null ? Colors.cyanAccent : Colors.redAccent,
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      _connectedDevice != null ? "SYSTEM ONLINE" : "DISCONNECTED",
                       style: TextStyle(
-                        fontSize: 22, 
+                        fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        color: _isListening ? Colors.cyanAccent : Colors.white54,
-                        shadows: _isListening ? [const BoxShadow(color: Colors.cyan, blurRadius: 10)] : [],
+                        letterSpacing: 3,
+                        color: _connectedDevice != null ? Colors.cyanAccent : Colors.redAccent
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 40),
-                  
-                  // --- TOMBOL MIC ---
-                  GestureDetector(
-                    onTapDown: (_) => _listen(),
-                    child: AnimatedBuilder(
-                      animation: _glowAnimation,
-                      builder: (context, child) {
-                        return Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: (_isListening ? Colors.red : Colors.cyanAccent).withOpacity(0.6),
-                                blurRadius: _isListening ? 50 : _glowAnimation.value,
-                                spreadRadius: _isListening ? 10 : _glowAnimation.value / 2,
-                              ),
-                            ],
-                          ),
-                          child: CircleAvatar(
-                            radius: 50,
-                            backgroundColor: Colors.black,
-                            child: Icon(
-                              _isListening ? Icons.mic : Icons.mic_none,
-                              size: 40,
-                              color: _isListening ? Colors.redAccent : Colors.cyanAccent,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  const Text("<< GESER UNTUK CREDIT >>", style: TextStyle(fontSize: 10, color: Colors.white24)),
-                ],
+                    const SizedBox(height: 10),
+                    if (_connectedDevice == null)
+                      const Text("Please connect to HC-05", style: TextStyle(color: Colors.grey, fontSize: 10)),
+                  ],
+                ),
               ),
             ),
 
-            // BAGIAN 2: BLUETOOTH LIST
+            // BAGIAN 2: BLUETOOTH LIST (Hanya muncul jika belum connect)
             if (_connectedDevice == null) ...[
-              const Divider(color: Colors.white24),
-              ElevatedButton.icon(
-                onPressed: _isScanning ? null : _startScan,
-                icon: _isScanning ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black)) : const Icon(Icons.search, color: Colors.black),
-                label: Text(_isScanning ? "SCANNING..." : "SCAN DEVICES", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 40.0),
+                child: ElevatedButton.icon(
+                  onPressed: _isScanning ? null : _startScan,
+                  icon: _isScanning ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black)) : const Icon(Icons.search, color: Colors.black),
+                  label: Text(_isScanning ? "SCANNING..." : "SCAN DEVICES", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.cyanAccent, minimumSize: const Size(double.infinity, 45)),
+                ),
               ),
+              const SizedBox(height: 10),
               Expanded(
-                flex: 3,
+                flex: 4,
                 child: ListView.builder(
                   itemCount: _scanResults.length,
                   itemBuilder: (c, i) {
                     final d = _scanResults[i].device;
                     if (d.platformName.isEmpty) return const SizedBox.shrink();
                     return Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
                       decoration: BoxDecoration(
                         border: Border.all(color: Colors.cyanAccent.withOpacity(0.3)),
                         borderRadius: BorderRadius.circular(10),
                         color: Colors.white.withOpacity(0.05),
                       ),
                       child: ListTile(
-                        title: Text(d.platformName, style: const TextStyle(color: Colors.white)),
-                        subtitle: Text(d.remoteId.toString(), style: const TextStyle(color: Colors.grey)),
-                        trailing: TextButton(
-                          onPressed: () => _connectToDevice(d),
-                          child: const Text("CONNECT", style: TextStyle(color: Colors.cyanAccent)),
-                        ),
+                        title: Text(d.platformName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        subtitle: Text(d.remoteId.toString(), style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                        trailing: const Icon(Icons.link, color: Colors.cyanAccent),
+                        onTap: () => _connectToDevice(d),
                       ),
                     );
                   },
@@ -364,36 +274,61 @@ class _JarvisPageState extends State<JarvisPage> with TickerProviderStateMixin, 
               )
             ],
 
-            // BAGIAN 3: SWITCH PANEL
+            // BAGIAN 3: SWITCH PANEL (TOMBOL KONTROL)
+            // Muncul hanya jika sudah connect
             if (_connectedDevice != null)
               Expanded(
-                flex: 3,
+                flex: 5, 
                 child: Container(
+                  width: double.infinity,
                   decoration: BoxDecoration(
-                    color: Colors.grey[900],
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+                    color: const Color(0xFF151515),
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(40)),
                     boxShadow: [
-                      BoxShadow(color: Colors.cyanAccent.withOpacity(0.2), blurRadius: 20, spreadRadius: 1)
+                      BoxShadow(color: Colors.cyanAccent.withOpacity(0.15), blurRadius: 30, spreadRadius: 1, offset: const Offset(0, -5))
                     ],
-                    border: Border(top: BorderSide(color: Colors.cyanAccent.withOpacity(0.5), width: 1)),
+                    border: Border(top: BorderSide(color: Colors.cyanAccent.withOpacity(0.3), width: 1)),
                   ),
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 30),
                   child: Column(
                     children: [
-                      const Text("MANUAL OVERRIDE", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 2, color: Colors.cyanAccent)),
-                      const SizedBox(height: 20),
+                      const Text("CONTROL PANEL", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, letterSpacing: 4, color: Colors.white54)),
+                      const SizedBox(height: 25),
                       
-                      _buildGlowSwitch("DOOR LOCK", _isDoorOpen, Icons.door_front_door, (val) {
-                        setState(() => _isDoorOpen = val);
-                        _sendMessage(val ? "DOOR_OPEN" : "DOOR_CLOSE");
+                      // 1. TOMBOL PINTU (Full Width)
+                      _buildBigButton("DOOR LOCK", _isDoorOpen, Icons.door_front_door, () {
+                        bool newState = !_isDoorOpen;
+                        _executeCommand(newState ? "DOOR_OPEN" : "DOOR_CLOSE", newState, 0);
                       }),
-                      
-                      const SizedBox(height: 15),
 
-                      _buildGlowSwitch("LIGHT SYSTEM", _isLampOn, Icons.lightbulb, (val) {
-                         setState(() => _isLampOn = val);
-                        _sendMessage(val ? "LAMP_ON" : "LAMP_OFF");
-                      }),
+                      const SizedBox(height: 20),
+
+                      // 2. TOMBOL LAMPU 1 & 2 (Grid/Row)
+                      Expanded(
+                        child: Row(
+                          children: [
+                            // LAMPU 1 (L1)
+                            Expanded(
+                              child: _buildBigButton("LAMP 1", _isLamp1On, Icons.lightbulb, () {
+                                bool newState = !_isLamp1On;
+                                _executeCommand(newState ? "L1_ON" : "L1_OFF", newState, 1);
+                              }),
+                            ),
+                            
+                            const SizedBox(width: 20), 
+                            
+                            // LAMPU 2 (L2)
+                            Expanded(
+                              child: _buildBigButton("LAMP 2", _isLamp2On, Icons.lightbulb_outline, () {
+                                bool newState = !_isLamp2On;
+                                _executeCommand(newState ? "L2_ON" : "L2_OFF", newState, 2);
+                              }),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      const Text(" GESER UNTUK CREDIT >>", style: TextStyle(fontSize: 10, color: Colors.white24)),
                     ],
                   ),
                 ),
@@ -404,22 +339,56 @@ class _JarvisPageState extends State<JarvisPage> with TickerProviderStateMixin, 
     );
   }
 
-  Widget _buildGlowSwitch(String label, bool value, IconData icon, Function(bool) onChanged) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.black45,
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: value ? Colors.cyanAccent : Colors.grey, width: 1),
-        boxShadow: value ? [BoxShadow(color: Colors.cyanAccent.withOpacity(0.4), blurRadius: 10)] : [],
-      ),
-      child: SwitchListTile(
-        title: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        secondary: Icon(icon, color: value ? Colors.cyanAccent : Colors.grey),
-        value: value,
-        activeColor: Colors.cyanAccent,
-        inactiveThumbColor: Colors.grey,
-        inactiveTrackColor: Colors.black,
-        onChanged: onChanged,
+  // Widget Tombol Kotak Besar
+  Widget _buildBigButton(String label, bool isActive, IconData icon, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: isActive ? Colors.cyanAccent.withOpacity(0.2) : const Color(0xFF222222),
+          borderRadius: BorderRadius.circular(25),
+          border: Border.all(
+            color: isActive ? Colors.cyanAccent : Colors.white10, 
+            width: isActive ? 2 : 1
+          ),
+          boxShadow: isActive ? [
+            BoxShadow(color: Colors.cyanAccent.withOpacity(0.3), blurRadius: 20, spreadRadius: 1)
+          ] : [],
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 45, color: isActive ? Colors.white : Colors.grey[700]),
+            const SizedBox(height: 15),
+            Text(
+              label, 
+              style: TextStyle(
+                fontSize: 16, 
+                fontWeight: FontWeight.bold, 
+                color: isActive ? Colors.white : Colors.grey
+              )
+            ),
+            const SizedBox(height: 5),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: isActive ? Colors.cyanAccent : Colors.transparent,
+                borderRadius: BorderRadius.circular(10)
+              ),
+              child: Text(
+                isActive ? "ACTIVE" : "OFF",
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: isActive ? Colors.black : Colors.redAccent,
+                  letterSpacing: 1
+                ),
+              ),
+            )
+          ],
+        ),
       ),
     );
   }
@@ -433,10 +402,9 @@ class CreditsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final List<String> members = [
       "1. Bagus Kurniawan",
-      "2. Nama Anggota 2",
-      "3. Nama Anggota 3",
-      "4. Nama Anggota 4",
-      "5. Nama Anggota 5",
+      "2. Afdoluddin",
+      "3. Ratna Sari",
+      "4. Sania Aulia",
     ];
 
     return Scaffold(
@@ -455,7 +423,7 @@ class CreditsPage extends StatelessWidget {
           children: [
             const Icon(Icons.group_work, size: 80, color: Colors.cyanAccent),
             const SizedBox(height: 20),
-            Text("DEVELOPMENT TEAM", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.cyanAccent, letterSpacing: 3, shadows: [BoxShadow(color: Colors.cyan.withOpacity(0.8), blurRadius: 10)])),
+            Text("KELOMPOK 5", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.cyanAccent, letterSpacing: 3, shadows: [BoxShadow(color: Colors.cyan.withOpacity(0.8), blurRadius: 10)])),
             const SizedBox(height: 40),
             ...members.map((name) => Padding(
               padding: const EdgeInsets.symmetric(vertical: 8.0),
